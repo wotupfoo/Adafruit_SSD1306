@@ -1064,7 +1064,6 @@ bool Adafruit_SSD1306::fastdisplay(uint8_t blocksize) {
   }
   return true;
 }
-
 #endif // ADAFRUIT_SSD1306_FASTDISPLAY
 
 // SCROLLING FUNCTIONS -----------------------------------------------------
