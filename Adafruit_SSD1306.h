@@ -24,6 +24,8 @@
 #ifndef _Adafruit_SSD1306_H_
 #define _Adafruit_SSD1306_H_
 
+#define ADAFRUIT_SSD1306_FASTDISPLAY 1
+
 // ONE of the following three lines must be #defined:
 //#define SSD1306_128_64 ///< DEPRECTAED: old way to specify 128x64 screen
 #define SSD1306_128_32 ///< DEPRECATED: old way to specify 128x32 screen
@@ -49,7 +51,7 @@ typedef volatile RwReg PortReg;
 typedef uint32_t PortMask;
 #define HAVE_PORTREG
 #elif (defined(__arm__) || defined(ARDUINO_FEATHER52)) &&                      \
-    !defined(ARDUINO_ARCH_MBED) && !defined(ARDUINO_ARCH_RP2040)
+    !defined(ARDUINO_ARCH_MBED)
 typedef volatile uint32_t PortReg;
 typedef uint32_t PortMask;
 #define HAVE_PORTREG
@@ -159,6 +161,10 @@ public:
   void ssd1306_command(uint8_t c);
   bool getPixel(int16_t x, int16_t y);
   uint8_t *getBuffer(void);
+#ifdef ADAFRUIT_SSD1306_FASTDISPLAY
+  bool fastdisplay(uint8_t blocksize);
+  uint8_t *getScreenBuffer(void);
+#endif
 
 private:
   inline void SPIwrite(uint8_t d) __attribute__((always_inline));
@@ -170,6 +176,9 @@ private:
   SPIClass *spi;
   TwoWire *wire;
   uint8_t *buffer;
+#ifdef ADAFRUIT_SSD1306_FASTDISPLAY
+	uint8_t *screen;
+#endif
   int8_t i2caddr, vccstate, page_end;
   int8_t mosiPin, clkPin, dcPin, csPin, rstPin;
 #ifdef HAVE_PORTREG

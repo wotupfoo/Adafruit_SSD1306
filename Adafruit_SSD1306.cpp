@@ -465,7 +465,10 @@ bool Adafruit_SSD1306::begin(uint8_t vcs, uint8_t addr, bool reset,
 
   if ((!buffer) && !(buffer = (uint8_t *)malloc(WIDTH * ((HEIGHT + 7) / 8))))
     return false;
-
+#ifdef ADAFRUIT_SSD1306_FASTDISPLAY
+  if ((!screen) && !(screen = (uint8_t *)calloc( WIDTH * ((HEIGHT + 7) / 8), sizeof(screen[0]) )))
+    return false;
+#endif
   clearDisplay();
   if (HEIGHT > 32) {
     drawBitmap((WIDTH - splash1_width) / 2, (HEIGHT - splash1_height) / 2,
@@ -546,7 +549,7 @@ bool Adafruit_SSD1306::begin(uint8_t vcs, uint8_t addr, bool reset,
   ssd1306_command1((vccstate == SSD1306_EXTERNALVCC) ? 0x10 : 0x14);
 
   static const uint8_t PROGMEM init3[] = {SSD1306_MEMORYMODE, // 0x20
-                                          0x00, // 0x0 act like ks0108
+                                          0x00, // 0x0 act like ks0108 - horizontal addressing
                                           SSD1306_SEGREMAP | 0x1,
                                           SSD1306_COMSCANDEC};
   ssd1306_commandList(init3, sizeof(init3));
@@ -914,6 +917,10 @@ bool Adafruit_SSD1306::getPixel(int16_t x, int16_t y) {
 */
 uint8_t *Adafruit_SSD1306::getBuffer(void) { return buffer; }
 
+#ifdef ADAFRUIT_SSD1306_FASTDISPLAY
+uint8_t *Adafruit_SSD1306::getScreenBuffer(void) { return screen; }
+#endif
+
 // REFRESH DISPLAY ---------------------------------------------------------
 
 /*!
@@ -924,12 +931,16 @@ uint8_t *Adafruit_SSD1306::getBuffer(void) { return buffer; }
             of graphics commands, as best needed by one's own application.
 */
 void Adafruit_SSD1306::display(void) {
+#ifdef ADAFRUIT_SSD1306_FASTDISPLAY
+  memcpy( screen, buffer, WIDTH * ((HEIGHT + 7) / 8) );
+#endif
   TRANSACTION_START
   static const uint8_t PROGMEM dlist1[] = {
       SSD1306_PAGEADDR,
       0,                      // Page start address
-      0xFF,                   // Page end (not really, but works here)
-      SSD1306_COLUMNADDR, 0}; // Column start address
+      7,                      // Page end (not really, but works here)
+      SSD1306_COLUMNADDR,
+      0};                     // Column start address
   ssd1306_commandList(dlist1, sizeof(dlist1));
   ssd1306_command1(WIDTH - 1); // Column end address
 
@@ -951,6 +962,7 @@ void Adafruit_SSD1306::display(void) {
     while (count--) {
       if (bytesOut >= WIRE_MAX) {
         wire->endTransmission();
+        taskYIELD();
         wire->beginTransmission(i2caddr);
         WIRE_WRITE((uint8_t)0x40);
         bytesOut = 1;
@@ -969,6 +981,145 @@ void Adafruit_SSD1306::display(void) {
   yield();
 #endif
 }
+
+#ifdef ADAFRUIT_SSD1306_FASTDISPLAY
+/*!
+    @brief  Push data currently in RAM to SSD1306 display on a per-row if-needed basis
+    @return None (void).
+    @note   Drawing operations are not visible until this function (or ::display()) is
+            called. Call after each graphics command, or after a whole set
+            of graphics commands, as best needed by one's own application.
+*/
+bool Adafruit_SSD1306::fastdisplay(uint8_t blocksize) {
+	uint8_t col, row;
+  uint32_t addr;
+  bool setupdone = false;
+
+  // blocksize must be a divisor of the width
+  if(WIDTH % blocksize) {
+    return false;
+  }
+
+	for (row=0; row < (HEIGHT+7)/8; row++) {  // Each row has 8 pixels in a column arragement
+    //bool rowUpdate = false;
+		for (col=0 ; col < WIDTH; col+=blocksize) {
+			addr = (row*WIDTH) + col;
+      for(uint8_t i=0; i < blocksize; i++) {
+        if( screen[addr+i] != buffer[addr+i]) {
+          memcpy( &screen[addr], &buffer[addr], blocksize);
+          // UPDATE THE BLOCK
+          if( !setupdone ) {
+            TRANSACTION_START
+            setupdone = true;
+          }
+          uint16_t count = blocksize;
+          uint8_t *ptr = buffer + (row*WIDTH) + col;
+          if (wire) { // I2C
+            wire->beginTransmission(i2caddr);
+            WIRE_WRITE((uint8_t)0x00); // Co = 0, D/C = 0 (command)
+            WIRE_WRITE(SSD1306_PAGEADDR); // 0x22
+            WIRE_WRITE(row);
+            WIRE_WRITE( ((HEIGHT+7)/8)-1 );
+
+            WIRE_WRITE(SSD1306_COLUMNADDR); // 0x21
+            WIRE_WRITE(col);
+            WIRE_WRITE(WIDTH-1);
+            wire->endTransmission();
+
+            wire->beginTransmission(i2caddr);
+            WIRE_WRITE((uint8_t)0x40); // Co = 0, D/C = 1 (data)
+            uint16_t bytesOut = 1;
+            while (count--) {
+              if (bytesOut >= WIRE_MAX) {
+                wire->endTransmission();
+                //taskYIELD();
+                wire->beginTransmission(i2caddr);
+                WIRE_WRITE((uint8_t)0x40); // Co = 0, D/C = 1 (data)
+                bytesOut = 1;
+              }
+              WIRE_WRITE(*ptr++);
+              bytesOut++;
+            }
+            wire->endTransmission();
+          } else { // SPI
+            // Implement if the granularity is the column not just a full row
+            SSD1306_MODE_COMMAND
+            SPIwrite(SSD1306_PAGEADDR);
+            SPIwrite(row);
+            SPIwrite( ((HEIGHT+7)/8)-1 );
+
+            SPIwrite(SSD1306_COLUMNADDR);
+            SPIwrite(col);
+            SPIwrite(WIDTH-1);
+
+            SSD1306_MODE_DATA
+            while (count--)
+              SPIwrite(*ptr++);
+          } // if blockupdate
+        }
+      } // for blocksize
+    } // for col
+
+#if 0
+    if( rowUpdate ) {
+      if( !setupdone ) {
+        TRANSACTION_START
+        setupdone = true;
+      }
+      uint16_t count = WIDTH - col;
+      uint8_t *ptr = buffer + (row*WIDTH) + col;
+      if (wire) { // I2C
+        wire->beginTransmission(i2caddr);
+        WIRE_WRITE((uint8_t)0x00); // Co = 0, D/C = 0 (command)
+        WIRE_WRITE(SSD1306_PAGEADDR); // 0x22
+        WIRE_WRITE(row);
+        WIRE_WRITE( ((HEIGHT+7)/8)-1 );
+
+        WIRE_WRITE(SSD1306_COLUMNADDR); // 0x21
+        WIRE_WRITE(col);
+        WIRE_WRITE(WIDTH-1);
+        wire->endTransmission();
+
+        wire->beginTransmission(i2caddr);
+        WIRE_WRITE((uint8_t)0x40); // Co = 0, D/C = 1 (data)
+        uint16_t bytesOut = 1;
+        while (count--) {
+          if (bytesOut >= WIRE_MAX) {
+            wire->endTransmission();
+            //taskYIELD();
+            wire->beginTransmission(i2caddr);
+            WIRE_WRITE((uint8_t)0x40); // Co = 0, D/C = 1 (data)
+            bytesOut = 1;
+          }
+          WIRE_WRITE(*ptr++);
+          bytesOut++;
+        }
+        wire->endTransmission();
+      } else { // SPI
+        // Implement if the granularity is the column not just a full row
+        SSD1306_MODE_COMMAND
+        SPIwrite(SSD1306_PAGEADDR);
+        SPIwrite(row);
+        SPIwrite( ((HEIGHT+7)/8)-1 );
+
+        SPIwrite(SSD1306_COLUMNADDR);
+        SPIwrite(col);
+        SPIwrite(WIDTH-1);
+
+        SSD1306_MODE_DATA
+        while (count--)
+          SPIwrite(*ptr++);
+      }  
+    } // if rowupdate
+#endif
+	}  // row loop
+  if( setupdone ) {
+    TRANSACTION_END
+  }
+  return true;
+}
+
+#endif // ADAFRUIT_SSD1306_FASTDISPLAY
 
 // SCROLLING FUNCTIONS -----------------------------------------------------
 
